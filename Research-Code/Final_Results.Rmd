@@ -1,0 +1,388 @@
+---
+title: "First-generation Immigrants' Upward Mobility: Exploring the Effects of Language Spoken At Home"
+author: "Natania Wong"
+date: "2023-10-18"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("haven")
+#install.packages("tidyverse")
+#install.packages("readr")
+#install.packages('ipumsr')
+#install.packages("oaxaca")
+#install.packages("quantreg")
+#install.packages("kableExtra")
+#install.packages("stargazer")
+#`install.packages("devtools")
+#library(devtools)
+#devtools::install_github("strengejacke/sjPlot")
+#install.packages("sjPlot")
+#install.packages('binsreg')
+install.packages("gtsummary")
+
+# Loading libraries
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(mapview)
+library(tigris)
+library(tidycensus)
+library(dplyr)
+library(readxl)
+library(ggpubr)
+library(ggthemes)
+library(ggplot2)
+library(patchwork)
+library(MASS)
+library(broom)
+library(quantreg)
+library(Hmisc)
+library(kableExtra)
+library(broom)
+library(stargazer)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(binsreg)
+library(gtsummary)
+library(texreg)
+select <- gtsummary::select
+summarize <- dplyr::summarize
+
+## Loading Data
+if (!require("ipumsr")) stop("Reading IPUMS data into R requires the ipumsr package. It can be installed using the following command: install.packages('ipumsr')")
+
+ddi <- read_ipums_ddi("/Users/nataniawong/Desktop/Cal Things/2023-2024/SP24/senior honors thesis/Research/usa_00006.xml")
+raw_data <- read_ipums_micro(ddi)
+head(raw_data, 5)
+```
+
+
+
+## Arranging Data
+```{r}
+## Subset Data: only dating back to 2000
+data <- raw_data %>%
+  subset(YEAR >= 2000)
+
+## Reformatting data into numeric values
+data[,c(28, 29, 31, 32)]=lapply(data[,c(28, 29, 31, 32)], as.numeric)
+data[,c(1)]=lapply(data[,c(1)], as.factor)
+#data_nonzero[,c(28, 29, 31, 32)]=lapply(data_nonzero[,c(28, 29, 31, 32)], as.numeric)
+data$SEX=data$SEX-1
+
+## Exploring Data
+# cat("no. of observations: ", dim(data)[1], "\n")
+# cat("no. of variables: ", dim(data)[2], "\n")
+# cat("names of variables: ", names(data), "\n")
+# cat("mean of total income: ", mean(data$INCWAGE), "\n")
+# cat("median of total income: ", median(data$INCWAGE), "\n")
+```
+
+## Data Manipulation
+** Not causal **
+In the following code, I will be examining the exiting columns and pass through arguments to mutate new columns.
+```{r}
+sort(names(data))
+# data %>% 
+#   select(BPLD) %>% 
+#   arrange(BPLD) %>% 
+#   filter(BPLD <= 12092) %>% 
+#   group_by(BPLD) %>% 
+#   count() %>% View()
+
+# Define a function to map the SPEAKENG (english proficiency) values to numeric scale
+map_eng_prof <- function(x) {
+  case_when(
+    x == 1 ~ 1,  # Does not speak English
+    x == 6 ~ 2,  # Speaks but not well
+    x == 5 ~ 3,  # Speaks well
+    x == 4 ~ 4,  # Speaks very well
+    x == 3 ~ 5,  # Speaks only English
+    TRUE   ~ NA  # Other cases
+  )
+}
+
+data <- data %>%
+  mutate(native = BPLD <= 12092) %>% # Born inside of US: Code 001:120 (BPL)/ Code 00100:12092 (BPLD)
+  mutate(citizen_status = CITIZEN==0) %>% ## Citizenship status question is asked for foreign-born, native-born will answer NA
+  mutate(speak_eng_home = LANGUAGED == 0100) %>% ## speak_eng_home == 1 if person answers yes
+  # mutate(speak_eng_only = SPEAKENG == 3) %>% ## speak_eng_only == 1 if person answers yes
+  mutate(eng_proficiency = map_eng_prof(SPEAKENG)) %>% ## mapping function (map_eng_prof)
+  mutate(some_college = EDUCD %in% c(065, 070, 071, 080, 090, 100)) %>% ## some college attainment if person has attended some year of college, but has not obtained a degree
+  mutate(college_grad = EDUCD %in% c(081:083, 101)) %>% ## person has obtained a degree
+  mutate(post_grad = EDUCD %in% c(081:083, 101, 114:116)) ## person has obtained a post-grad degree
+
+map_race <- function(x) {
+  case_when(
+    x == 1 ~ "White",  
+    x == 2 ~ "Black/African American",  
+    x == 3 ~ "American Indian or Alaska Native",  
+    x == 4 | 5 | 6 ~ "Asian or Pacific Islander",  
+    x == 7 | 8 | 9 ~ "Other races or mixed race"
+  )
+}
+
+# Add new column (word version of race)
+data$agg_race = map_race(data$RACE)
+data_cleaned <- data %>% 
+  subset(INCWAGE > 0 & INCWAGE < 999999)
+
+#data$native <- factor(data$native,
+#                      levels = c("TRUE", "FALSE"))
+#data$speak_eng_home <- factor(data$speak_eng_home,
+#                              levels = c("TRUE", "FALSE"))
+```
+
+## Data exploration
+```{r}
+## Distribution of citizenship status
+# p3 <- data%>%
+#   ggplot(aes(x=factor(CITIZEN))) +
+#   geom_bar() +
+#   theme_bw() 
+# 
+# p4 <- data%>%
+#   ggplot(aes(x=factor(citizen_status))) +
+#   geom_bar() +
+#   theme_bw() 
+# 
+# p3 | p4
+```
+
+
+```{r}
+# data%>%
+#   ggplot(aes(x=log(INCWAGE))) +
+#   geom_histogram() +
+#   theme_bw() 
+```
+
+
+
+```{r}
+## Proportion of people who do not have an income
+# no_wage <- data[data$INCWAGE==0,]
+# prop_no_wage <- nrow(no_wage) / nrow(data)
+# cat("prop of no wage: ", prop_no_wage, "\n")
+# 
+# no_totincome <- data[data$INCTOT==0,]
+# prop_no_totwage <- nrow(no_totincome) / nrow(data)
+# cat("prop of no total wage: ", prop_no_totwage, "\n")
+```
+
+For the purpose of this study, I will subset the population that is not in the labor force, since they would not reflect the results of the topic in interest. I will also subset the results to only those with a positive wage, as well as removing the outliers who have a salary of 999999, since that is a representation of NA.
+```{r}
+## Subset Data: only those in labor force, and those who do not have a wage of 999999
+# data <- data %>%
+#   subset(LABFORCE!=1, EMPSTAT!=3)%>% 
+#   subset(INCWAGE < 999999)
+# 
+# # INCWAGE > 0 (control shift c)
+# 
+# cat("prop of no wage (after subsetting): ", 
+#     nrow(data[data$INCWAGE==0,]) / nrow(data), "\n")
+# 
+# cat("prop of no total wage (after subsetting): ", 
+#     nrow(data[data$INCTOT==0,]) / nrow(data), "\n")
+# 
+# ## Non-citizen wage distribution (after subsetting)
+# non_native <- data[data$native==0,]
+# nc1 <- non_citizen%>%
+#   ggplot(aes(x=INCWAGE)) +
+#   geom_histogram() +
+#   theme_bw() +
+#   labs(title = "Non-citizen Wage Distribution (After subsetting)")
+# 
+# ## Citizen wage distribution (after subsetting)
+# citizen <- data[data$citizen_status==1,]
+# c1 <- citizen%>%
+#   ggplot(aes(x=INCWAGE)) +
+#   geom_histogram() +
+#   theme_bw() +
+#   labs(title = "Citizen Wage Distribution (After subsetting)")
+# 
+# nc1 | c1
+
+nrow(data[data$INCWAGE==0,])/nrow(data)
+data_nonzero <- data %>% 
+  subset(INCWAGE != 0)
+hist(log(data_nonzero$INCWAGE))
+data_nonzero%>%
+  ggplot(aes(x=INCWAGE)) +
+  geom_histogram() +
+  theme_bw()
+```
+
+
+```{r}
+s1 <- data %>%
+  group_by(YEAR, native, speak_eng_home) %>%
+  summarize(mean_salary = mean(INCWAGE)) %>%
+  ggplot(aes(x = YEAR, y = mean_salary, color = speak_eng_home)) +
+  geom_line() +
+  labs(title = "Mean Salary Over the Years By Nativity",
+       x = "Year",
+       y = "Mean Salary") +
+  theme_bw() +
+  facet_wrap(~native)
+
+
+s2 <- data %>%
+  group_by(YEAR, native, speak_eng_home) %>%
+  summarize(mean_salary = mean(INCWAGE)) %>%
+  ggplot(aes(x = YEAR, y = mean_salary, color = native)) +
+  geom_line() +
+  labs(title = "Mean Salary Over the Years By Speaking Eng at Home",
+       x = "Year",
+       y = "Mean Salary") +
+  theme_bw() +
+  facet_wrap(~speak_eng_home)
+
+s1/s2
+```
+
+
+
+```{r}
+# Distribution of people who speak english at home
+# data%>%
+#   ggplot(aes(x=speak_eng_home)) +
+#   geom_bar() +
+#   theme_bw() 
+# 
+# # Distribution of people's self-assessed english ability
+# data%>%
+#   ggplot(aes(x=factor(SPEAKENG))) +
+#   geom_bar() +
+#   theme_bw() 
+```
+
+
+## OLS Regression
+
+```{r}
+
+data$log_INCWAGE <- log(data$INCWAGE)
+
+#lm
+lm0 = lm(INCWAGE  ~ native + speak_eng_home, data=na.omit(data))
+summary(lm0)
+
+lm0_tidy <- tidy(lm0) 
+lm0_glance <- glance(lm0) 
+
+# Extract relevant information
+r_squared <- lm0_glance$r.squared
+aic <- lm0_glance$aic
+bic <- lm0_glance$bic
+log_lik <- lm0_glance$logLik
+
+# Create a data frame for additional information
+additional_info <- data.frame(
+  Metric = c("R-squared", "AIC", "BIC", "Log.Lik."),
+  Value = c(r_squared, aic, bic, log_lik)
+)
+
+# Combine with the original table
+combined_table <- bind_rows(lm0_tidy, additional_info)
+
+# Print the combined table
+kbl(lm0_tidy, caption = "Table 2: OLS Regression Model 1 Results", format = "html", align = "r") %>%
+  kable_classic(full_width = F, html_font = "helvetica") 
+
+vars <- c("INCWAGE")
+sumtable(data, var=vars)
+
+summary(data$INCWAGE)
+
+```
+
+
+```{r}
+lm1 = lm(INCWAGE ~ native + AGE + SEX + speak_eng_home + some_college + college_grad + post_grad, data=data)
+summary(lm1)
+
+tidy(lm1) %>%  
+  kbl(caption="Table 3: OLS Regression Model 2 Results",
+      format= "html",
+      align="r") %>%
+  kable_classic(full_width = F, html_font = "helvetica") 
+
+```
+
+```{r}
+lm2 = lm(INCWAGE ~ native * speak_eng_home + AGE + SEX + some_college + college_grad + post_grad, data=data)
+summary(lm2)
+
+#quantile regression
+rq0 <- rq(INCWAGE ~ native + AGE + SEX + speak_eng_home + some_college + college_grad + post_grad, data = data, weights = HHWT, method = "fn", tau = 0.5)
+summary(rq0)
+
+rq1 <- rq(INCWAGE ~ native * speak_eng_home + AGE + SEX + some_college + college_grad + post_grad, data = data, weights = HHWT, method = "fn", tau = 0.5)
+summary(rq1)
+```
+
+
+## ALternative OLS (By grouping salary)
+```{r}
+quantile(data[data$YEAR==2000,]$INCWAGE)
+quantile(data[data$YEAR==2006,]$INCWAGE)
+quantile(data[data$YEAR==2011,]$INCWAGE)
+quantile(data[data$YEAR==2016,]$INCWAGE)
+
+# # 2000, Wages: 75th percentile 
+# lm(INCWAGE ~ native + AGE + SEX + citizen_status + speak_eng_home + some_college + college_grad + post_grad, data=data[data$YEAR==2000 & data$INCWAGE >= 40000,])
+# 
+# # 2006, Wages: 75th percentile 
+# lm(INCWAGE ~ native + AGE + SEX + citizen_status + speak_eng_home + some_college + college_grad + post_grad, data=data[data$YEAR==2006 & data$INCWAGE >= 50000,])
+# 
+# # 2011, Wages: 75th percentile 
+# lm(INCWAGE ~ native + AGE + SEX + citizen_status + speak_eng_home + some_college + college_grad + post_grad, data=data[data$YEAR==2011 & data$INCWAGE >= 55000,])
+# 
+# # 2016, Wages: 75th percentile 
+# lm(INCWAGE ~ native + AGE + SEX + citizen_status + speak_eng_home + some_college + college_grad + post_grad, data=data[data$YEAR==2016 & data$INCWAGE >= 63000,])
+```
+
+## Blinder-Oaxaca Decomposition
+```{r}
+library(oaxaca)
+
+results0 <- oaxaca(INCWAGE ~ AGE + SEX  + speak_eng_home + some_college + college_grad + post_grad | native, data=data)
+
+results0$n # Group B: data$native == 1
+results0$y
+
+results0$twofold$overall
+
+plot(results0, decomposition = "twofold", group.weight = -1)
+ 
+```
+
+```{r}
+tidy(results0) %>%  
+  kbl(caption="Table 3: OLS Regression Model 2 Results",
+      format= "html",
+      align="r") %>%
+  kable_classic(full_width = F, html_font = "helvetica") 
+```
+
+
+
+
+```{r}
+no_postgrad <- data %>%
+  subset(post_grad!=1)
+
+results1 <- oaxaca(INCWAGE ~ AGE + SEX  + speak_eng_home + some_college + college_grad | native, data=no_postgrad)
+
+results1$n # Group B: data$native == 1
+results1$y
+
+results1$twofold$overall
+
+plot(results1, decomposition = "twofold", group.weight = -1)
+```
+
